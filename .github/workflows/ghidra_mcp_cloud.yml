@@ -4,14 +4,47 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: write
+
 jobs:
   ghidra-mcp-cloud:
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     steps:
-      - name: Checkout Repository
+      - name: 1. Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Boot Ghidra 12.1.4 + GhidraMCP v4.1 + Cloudflare Tunnel (16 GB RAM Free Runner)
+      - name: 2. Boot Cloud GhidraMCP & Publish Live URL (Completes in ~60s with Green Checkmark!)
         run: |
-          python3 ghidra_mcp_cloud_launcher.py --port 7860
+          nohup python3 ghidra_mcp_cloud_launcher.py --port 7860 > /tmp/ghidra_omni.log 2>&1 &
+          echo "Waiting for Headless Ghidra 12.1.4 + Cloudflare Tunnel to publish URL..."
+          for i in $(seq 1 90); do
+            if grep -q "trycloudflare.com" /tmp/ghidra_omni.log; then
+              BASE_URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/ghidra_omni.log | head -n 1)
+              MCP_URL="${BASE_URL}/mcp"
+              GUI_URL="${BASE_URL}/"
+              echo "=================================================================="
+              echo "  CLOUD SERVER IS LIVE!"
+              echo "  1. PASTE THIS IN GEMINI CONNECTED APPS : ${MCP_URL}"
+              echo "  2. OPEN YOUR CLOUD WORKSTATION GUI     : ${GUI_URL}"
+              echo "=================================================================="
+              echo "## 🐉 Your 100% Free GitHub Cloud GhidraMCP Workstation is LIVE!" >> $GITHUB_STEP_SUMMARY
+              echo "- **Paste in Gemini Connected Apps:** \`${MCP_URL}\`" >> $GITHUB_STEP_SUMMARY
+              echo "- **Open Cloud Workstation GUI:** [${GUI_URL}](${GUI_URL})" >> $GITHUB_STEP_SUMMARY
+              printf '{"status":"LIVE","mcp_url":"%s","gui_url":"%s","updated_at":"%s"}\n' "$MCP_URL" "$GUI_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > LIVE_MCP_URL.json
+              git config user.name "ghidra-mcp-cloud-bot"
+              git config user.email "bot@users.noreply.github.com"
+              git add LIVE_MCP_URL.json
+              git commit -m "Publish live Cloud MCP URL [skip ci]" || true
+              git push || true
+              break
+            fi
+            sleep 3
+          done
+          cat /tmp/ghidra_omni.log
+
+      - name: 3. Keep Cloud Server Online (Spins while keeping your server alive for 6 hours!)
+        run: |
+          echo "Your Cloud GhidraMCP Server is ONLINE! As long as this step is spinning, your server stays live."
+          tail -f /tmp/ghidra_omni.log
