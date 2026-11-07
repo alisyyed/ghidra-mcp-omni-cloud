@@ -1,0 +1,17 @@
+name: GhidraMCP 24x7 Free Cloud Server
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  ghidra-mcp-cloud:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Boot Ghidra 12.1.4 + GhidraMCP v4.1 + Cloudflare Tunnel (16 GB RAM Free Runner)
+        run: |
+          python3 ghidra_mcp_cloud_launcher.py --port 7860
