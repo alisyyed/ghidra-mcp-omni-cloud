@@ -1,21 +1,29 @@
-name: GhidraMCP 24x7 Free Cloud Server
+name: GhidraMCP 24x7 Perpetual Cloud Relay
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
+  schedule:
+    # Automatically ensures a runner is alive every 5 hours (24/7/365 Set-and-Forget)
+    - cron: '15 */5 * * *'
 
 permissions:
   contents: write
+  actions: write
+
+concurrency:
+  group: ghidra-mcp-perpetual-relay
+  cancel-in-progress: true
 
 jobs:
   ghidra-mcp-cloud:
     runs-on: ubuntu-24.04
-    timeout-minutes: 350
+    timeout-minutes: 330
     steps:
       - name: 1. Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 2. Boot Cloud GhidraMCP & Publish Live URL (Completes in ~60s with Green Checkmark!)
+      - name: 2. Boot Cloud GhidraMCP & Publish Live URL to LIVE_MCP_URL.json (~60s)
         run: |
           nohup python3 ghidra_mcp_cloud_launcher.py --port 7860 > /tmp/ghidra_omni.log 2>&1 &
           echo "Waiting for Headless Ghidra 12.1.4 + Cloudflare Tunnel to publish URL..."
@@ -25,26 +33,40 @@ jobs:
               MCP_URL="${BASE_URL}/mcp"
               GUI_URL="${BASE_URL}/"
               echo "=================================================================="
-              echo "  CLOUD SERVER IS LIVE!"
-              echo "  1. PASTE THIS IN GEMINI CONNECTED APPS : ${MCP_URL}"
-              echo "  2. OPEN YOUR CLOUD WORKSTATION GUI     : ${GUI_URL}"
+              echo "  24/7 PERPETUAL CLOUD SERVER IS LIVE!"
+              echo "  1. CURRENT TUNNEL MCP URL : ${MCP_URL}"
+              echo "  2. WORKSTATION WEB GUI    : ${GUI_URL}"
               echo "=================================================================="
-              echo "## 🐉 Your 100% Free GitHub Cloud GhidraMCP Workstation is LIVE!" >> $GITHUB_STEP_SUMMARY
-              echo "- **Paste in Gemini Connected Apps:** \`${MCP_URL}\`" >> $GITHUB_STEP_SUMMARY
+              echo "## 🐉 Your 24/7 Perpetual GitHub Cloud GhidraMCP Server is LIVE!" >> $GITHUB_STEP_SUMMARY
+              echo "- **Current Tunnel MCP URL:** \`${MCP_URL}\`" >> $GITHUB_STEP_SUMMARY
               echo "- **Open Cloud Workstation GUI:** [${GUI_URL}](${GUI_URL})" >> $GITHUB_STEP_SUMMARY
               printf '{"status":"LIVE","mcp_url":"%s","gui_url":"%s","updated_at":"%s"}\n' "$MCP_URL" "$GUI_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > LIVE_MCP_URL.json
               git config user.name "ghidra-mcp-cloud-bot"
               git config user.email "bot@users.noreply.github.com"
               git add LIVE_MCP_URL.json
-              git commit -m "Publish live Cloud MCP URL [skip ci]" || true
+              git commit -m "Auto-update LIVE_MCP_URL.json [skip ci]" || true
               git push || true
               break
             fi
             sleep 3
           done
+          # Ensure +x permissions on all native Ghidra decompiler binaries
+          chmod -R +x /tmp/ghidra_mcp_cloud/ghidra_12.1.4_PUBLIC/Ghidra/Features/Decompiler/os/ 2>/dev/null || true
           cat /tmp/ghidra_omni.log
 
-      - name: 3. Keep Cloud Server Online (Spins while keeping your server alive for 6 hours!)
+      - name: 3. Keep Server Online (5-Hour Relay Window)
         run: |
-          echo "Your Cloud GhidraMCP Server is ONLINE! As long as this step is spinning, your server stays live."
-          tail -f /tmp/ghidra_omni.log
+          echo "Server is LIVE! Running for 5 hours before automatically spawning the next relay runner..."
+          sleep 18000
+
+      - name: 4. Perpetual Self-Respawn (Automatically Triggers Next Runner Before Exiting!)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggering next 24/7 relay runner via GitHub API..."
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/ghidra_mcp_cloud.yml/dispatches" \
+            -d '{"ref":"main"}' || true
