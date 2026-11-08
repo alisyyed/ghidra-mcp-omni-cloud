@@ -893,22 +893,7 @@ def auto_detect_saved_github_token(work_dir: Path) -> str:
         except Exception:
             pass
 
-    if shutil.which("git"):
-        try:
-            proc = subprocess.run(
-                ["git", "credential", "fill"],
-                input="protocol=https\nhost=github.com\n\n",
-                capture_output=True,
-                text=True,
-                timeout=4,
-            )
-            for line in proc.stdout.splitlines():
-                if line.startswith("password="):
-                    cand = line.split("=", 1)[1].strip()
-                    if cand.startswith(("ghp_", "github_pat_", "gho_")):
-                        return cand
-        except Exception:
-            pass
+    # Skipped git credential fill to avoid Windows GCM popup
 
     return ""
 
@@ -1020,8 +1005,19 @@ def deploy_cloudflare_worker_automatically(
             f'name = "{worker_name}"\nmain = "worker.js"\ncompatibility_date = "2026-01-01"\nworkers_dev = true\n',
             encoding="utf-8",
         )
-        print("[+] Running `npx --yes wrangler@latest deploy` (if a browser tab opens, click 'Allow' once)...")
         npx_cmd = "npx.cmd" if platform.system().lower() == "windows" and shutil.which("npx.cmd") else "npx"
+        # Check if Wrangler is already logged in; if not, run `wrangler login` attached to the real interactive TTY!
+        whoami = subprocess.run(
+            [npx_cmd, "--yes", "wrangler@latest", "whoami"],
+            cwd=str(w_dir),
+            capture_output=True,
+            text=True,
+        )
+        if whoami.returncode != 0 or "not authenticated" in (whoami.stdout + whoami.stderr).lower():
+            print("[+] Opening Cloudflare 1-click browser login (interactive TTY mode — click 'Allow' in your browser)...")
+            subprocess.run([npx_cmd, "--yes", "wrangler@latest", "login"], cwd=str(w_dir), check=False)
+
+        print("[+] Deploying Permanent Router Worker via `npx --yes wrangler@latest deploy`...")
         proc = subprocess.Popen(
             [npx_cmd, "--yes", "wrangler@latest", "deploy"],
             cwd=str(w_dir),
@@ -1039,6 +1035,38 @@ def deploy_cloudflare_worker_automatically(
                 if m:
                     deployed_url = m.group(1).rstrip("/") + "/mcp"
         proc.wait()
+
+        # If user skipped Cloudflare login, automatically fall back to Wrangler 4.x's zero-login `--temporary` worker!
+        if not deployed_url:
+            print("[+] No Cloudflare login detected — automatically deploying zero-login `--temporary` Worker...")
+            proc_tmp = subprocess.Popen(
+                [npx_cmd, "--yes", "wrangler@latest", "deploy", "--temporary"],
+                cwd=str(w_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            claim_url = ""
+            if proc_tmp.stdout:
+                for line in proc_tmp.stdout:
+                    print(line, end="", flush=True)
+                    output_lines.append(line)
+                    m = re.search(r"(https://[a-zA-Z0-9._-]+\.workers\.dev)", line)
+                    if m and not deployed_url:
+                        deployed_url = m.group(1).rstrip("/") + "/mcp"
+                    m_claim = re.search(r"(https://[a-zA-Z0-9./?=&_-]*cloudflare[a-zA-Z0-9./?=&_-]*)", line)
+                    if m_claim and "claim" in line.lower():
+                        claim_url = m_claim.group(1)
+            proc_tmp.wait()
+            if deployed_url:
+                copy_to_system_clipboard(deployed_url)
+                return {
+                    "status": "DEPLOYED_PERMANENT_WORKER",
+                    "permanent_mcp_url": deployed_url,
+                    "claim_url_to_keep_forever": claim_url,
+                    "method": "Wrangler Zero-Login (--temporary)",
+                }
+
         if deployed_url:
             copy_to_system_clipboard(deployed_url)
             return {
