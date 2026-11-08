@@ -674,24 +674,32 @@ if __name__ == "__main__":
     demo.launch()
 """
 
-GITHUB_WORKFLOW_YML = r"""name: GhidraMCP 24x7 Free Cloud Server
+GITHUB_WORKFLOW_YML = r"""name: GhidraMCP 24x7 Perpetual Cloud Relay
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
+  schedule:
+    # Automatically ensures a runner is alive every 5 hours (24/7/365 Set-and-Forget)
+    - cron: '15 */5 * * *'
 
 permissions:
   contents: write
+  actions: write
+
+concurrency:
+  group: ghidra-mcp-perpetual-relay
+  cancel-in-progress: true
 
 jobs:
   ghidra-mcp-cloud:
     runs-on: ubuntu-24.04
-    timeout-minutes: 350
+    timeout-minutes: 330
     steps:
       - name: 1. Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 2. Boot Cloud GhidraMCP & Publish Live URL (Completes in ~60s with Green Checkmark!)
+      - name: 2. Boot Cloud GhidraMCP & Publish Live URL to LIVE_MCP_URL.json (~60s)
         run: |
           nohup python3 ghidra_mcp_cloud_launcher.py --port 7860 > /tmp/ghidra_omni.log 2>&1 &
           echo "Waiting for Headless Ghidra 12.1.4 + Cloudflare Tunnel to publish URL..."
@@ -701,30 +709,450 @@ jobs:
               MCP_URL="${BASE_URL}/mcp"
               GUI_URL="${BASE_URL}/"
               echo "=================================================================="
-              echo "  CLOUD SERVER IS LIVE!"
-              echo "  1. PASTE THIS IN GEMINI CONNECTED APPS : ${MCP_URL}"
-              echo "  2. OPEN YOUR CLOUD WORKSTATION GUI     : ${GUI_URL}"
+              echo "  24/7 PERPETUAL CLOUD SERVER IS LIVE!"
+              echo "  1. CURRENT TUNNEL MCP URL : ${MCP_URL}"
+              echo "  2. WORKSTATION WEB GUI    : ${GUI_URL}"
               echo "=================================================================="
-              echo "## 🐉 Your 100% Free GitHub Cloud GhidraMCP Workstation is LIVE!" >> $GITHUB_STEP_SUMMARY
-              echo "- **Paste in Gemini Connected Apps:** \`${MCP_URL}\`" >> $GITHUB_STEP_SUMMARY
+              echo "## 🐉 Your 24/7 Perpetual GitHub Cloud GhidraMCP Server is LIVE!" >> $GITHUB_STEP_SUMMARY
+              echo "- **Current Tunnel MCP URL:** \`${MCP_URL}\`" >> $GITHUB_STEP_SUMMARY
               echo "- **Open Cloud Workstation GUI:** [${GUI_URL}](${GUI_URL})" >> $GITHUB_STEP_SUMMARY
               printf '{"status":"LIVE","mcp_url":"%s","gui_url":"%s","updated_at":"%s"}\n' "$MCP_URL" "$GUI_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > LIVE_MCP_URL.json
               git config user.name "ghidra-mcp-cloud-bot"
               git config user.email "bot@users.noreply.github.com"
               git add LIVE_MCP_URL.json
-              git commit -m "Publish live Cloud MCP URL [skip ci]" || true
+              git commit -m "Auto-update LIVE_MCP_URL.json [skip ci]" || true
               git push || true
               break
             fi
             sleep 3
           done
+          # Ensure +x permissions on all native Ghidra decompiler binaries
+          chmod -R +x /tmp/ghidra_mcp_cloud/ghidra_12.1.4_PUBLIC/Ghidra/Features/Decompiler/os/ 2>/dev/null || true
           cat /tmp/ghidra_omni.log
 
-      - name: 3. Keep Cloud Server Online (Spins while keeping your server alive for 6 hours!)
+      - name: 3. Keep Server Online (5-Hour Relay Window)
         run: |
-          echo "Your Cloud GhidraMCP Server is ONLINE! As long as this step is spinning, your server stays live."
-          tail -f /tmp/ghidra_omni.log
+          echo "Server is LIVE! Running for 5 hours before automatically spawning the next relay runner..."
+          sleep 18000
+
+      - name: 4. Perpetual Self-Respawn (Automatically Triggers Next Runner Before Exiting!)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggering next 24/7 relay runner via GitHub API..."
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/ghidra_mcp_cloud.yml/dispatches" \
+            -d '{"ref":"main"}' || true
 """
+
+
+def build_permanent_cloudflare_worker_js(
+    github_username: str = "<YOUR_GITHUB_USERNAME>",
+    repo_name: str = "ghidra-mcp-omni-cloud",
+    gh_token_for_autowake: str = "",
+) -> str:
+    """Generate a 100% Free Cloudflare Worker script that gives Gemini a SINGLE PERMANENT URL
+    (`https://ghidra-mcp-forever.<your-subdomain>.workers.dev/mcp`), dynamically routes to the latest
+    `LIVE_MCP_URL.json` tunnel URL published by your 24/7 GitHub Actions relay, AND automatically
+    wakes up your GitHub Actions runner via `workflow_dispatch` if it ever goes idle!"""
+    raw_json_url = f"https://raw.githubusercontent.com/{github_username}/{repo_name}/main/LIVE_MCP_URL.json"
+    dispatch_url = f"https://api.github.com/repos/{github_username}/{repo_name}/actions/workflows/ghidra_mcp_cloud.yml/dispatches"
+    return f"""/**
+ * GhidraMCP v6.5 — Permanent "Set-and-Forget" Cloudflare Worker Router + Auto-Wake
+ * =================================================================================
+ * Deployed automatically by ghidra_mcp_cloud_launcher.py.
+ * Gives Gemini Connected Apps ONE permanent URL that never changes:
+ *   https://ghidra-mcp-forever.<your-subdomain>.workers.dev/mcp
+ */
+
+const GITHUB_LIVE_JSON_URL = "{raw_json_url}";
+const GITHUB_DISPATCH_URL = "{dispatch_url}";
+const AUTO_WAKE_GH_TOKEN = "{gh_token_for_autowake}";
+
+async function triggerGithubAutoWake() {{
+  if (!AUTO_WAKE_GH_TOKEN) return false;
+  try {{
+    const r = await fetch(GITHUB_DISPATCH_URL, {{
+      method: "POST",
+      headers: {{
+        "Authorization": "Bearer " + AUTO_WAKE_GH_TOKEN,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "GhidraMCP-Permanent-Router/6.5",
+        "Content-Type": "application/json"
+      }},
+      body: JSON.stringify({{ ref: "main" }})
+    }});
+    return r.status === 204 || r.status === 200;
+  }} catch (_) {{
+    return false;
+  }}
+}}
+
+async function getLatestTunnelUrl() {{
+  const res = await fetch(GITHUB_LIVE_JSON_URL + "?t=" + Date.now(), {{
+    headers: {{ "User-Agent": "GhidraMCP-Permanent-Router/6.5" }}
+  }});
+  if (!res.ok) throw new Error("Could not fetch LIVE_MCP_URL.json: HTTP " + res.status);
+  return await res.json();
+}}
+
+export default {{
+  async fetch(request) {{
+    if (request.method === "OPTIONS") {{
+      return new Response(null, {{
+        headers: {{
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Accept, MCP-Session-Id, Last-Event-ID"
+        }}
+      }});
+    }}
+
+    const url = new URL(request.url);
+    try {{
+      const live = await getLatestTunnelUrl();
+      const targetBase = (live.gui_url || live.mcp_url.replace(/\\/mcp$/, "")).replace(/\\/$/, "");
+      const targetUrl = targetBase + url.pathname + url.search;
+
+      if (request.method === "GET" && (url.pathname === "/status" || url.pathname === "/router-status")) {{
+        return new Response(JSON.stringify({{
+          router: "GhidraMCP v6.5 Permanent Set-and-Forget Router",
+          active_backend_mcp_url: live.mcp_url,
+          active_backend_gui_url: live.gui_url,
+          updated_at: live.updated_at
+        }}, null, 2), {{
+          headers: {{ "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }}
+        }});
+      }}
+
+      const proxyReq = new Request(targetUrl, {{
+        method: request.method,
+        headers: request.headers,
+        body: request.method !== "GET" && request.method !== "HEAD" ? await request.arrayBuffer() : undefined,
+      }});
+      const resp = await fetch(proxyReq);
+      if (resp.status >= 502) {{
+        await triggerGithubAutoWake();
+        throw new Error("Upstream tunnel rotated or sleeping (HTTP " + resp.status + ") — triggered Auto-Wake!");
+      }}
+      const newHeaders = new Headers(resp.headers);
+      newHeaders.set("Access-Control-Allow-Origin", "*");
+      return new Response(resp.body, {{ status: resp.status, headers: newHeaders }});
+    }} catch (err) {{
+      await triggerGithubAutoWake();
+      if (request.method === "POST") {{
+        try {{
+          const body = await request.clone().json();
+          if (body.method === "initialize") {{
+            return new Response(JSON.stringify({{
+              jsonrpc: "2.0",
+              id: body.id || 1,
+              result: {{
+                protocolVersion: "2025-03-26",
+                capabilities: {{ tools: {{ listChanged: true }} }},
+                serverInfo: {{ name: "GhidraMCP-Permanent-Cloud-Router", version: "6.5.0" }}
+              }}
+            }}), {{ headers: {{ "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }} }});
+          }}
+        }} catch (_) {{}}
+      }}
+      return new Response(JSON.stringify({{
+        status: "AUTO_WAKING_CLOUD_RELAY",
+        message: "Automatically signaled your 24/7 GitHub Cloud Relay to wake/rotate (~45s). Repeat your prompt in a moment!",
+        error: String(err)
+      }}, null, 2), {{ status: 200, headers: {{ "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }} }});
+    }}
+  }}
+}};
+"""
+
+
+def auto_detect_saved_github_token(work_dir: Path) -> str:
+    """Try to find an existing GitHub token automatically from saved config, env, `gh auth token`, or `git credential fill`."""
+    cfg_file = work_dir / "forever_credentials.json"
+    if cfg_file.exists():
+        try:
+            tok = json.loads(cfg_file.read_text(encoding="utf-8")).get("github_token", "")
+            if tok:
+                return tok
+        except Exception:
+            pass
+
+    for env_key in ("GITHUB_TOKEN", "GH_TOKEN"):
+        if os.environ.get(env_key):
+            return os.environ[env_key].strip()
+
+    if shutil.which("gh"):
+        try:
+            out = subprocess.check_output(["gh", "auth", "token"], stderr=subprocess.DEVNULL, text=True).strip()
+            if out and len(out) >= 20:
+                return out
+        except Exception:
+            pass
+
+    if shutil.which("git"):
+        try:
+            proc = subprocess.run(
+                ["git", "credential", "fill"],
+                input="protocol=https\nhost=github.com\n\n",
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+            for line in proc.stdout.splitlines():
+                if line.startswith("password="):
+                    cand = line.split("=", 1)[1].strip()
+                    if cand.startswith(("ghp_", "github_pat_", "gho_")):
+                        return cand
+        except Exception:
+            pass
+
+    return ""
+
+
+def deploy_cloudflare_worker_automatically(
+    work_dir: Path,
+    github_username: str,
+    repo_name: str,
+    gh_token: str,
+    cf_api_token: str = "",
+) -> Dict[str, Any]:
+    """Automatically deploy the Permanent Front-Door Cloudflare Worker Router from the user's PC
+    via either the Cloudflare REST API (if `cf_api_token` is given) or `npx --yes wrangler@latest deploy`."""
+    worker_name = "ghidra-mcp-forever"
+    worker_js = build_permanent_cloudflare_worker_js(github_username, repo_name, gh_token)
+
+    # Route 1: Direct Cloudflare REST API (zero Node.js / Wrangler required if token provided)
+    if cf_api_token.strip():
+        tok = cf_api_token.strip()
+        cf_headers = {
+            "Authorization": f"Bearer {tok}",
+            "Content-Type": "application/json",
+            "User-Agent": "GhidraMCP-AutoProvisioner/6.5",
+        }
+        try:
+            acc_req = urllib.request.Request("https://api.cloudflare.com/client/v4/accounts", headers=cf_headers)
+            with urllib.request.urlopen(acc_req, timeout=12) as resp:
+                acc_data = json.loads(resp.read().decode("utf-8"))
+            accounts = acc_data.get("result") or []
+            if not accounts:
+                return {"status": "error", "error": "No Cloudflare account found for this API token."}
+            account_id = accounts[0]["id"]
+
+            sub_req = urllib.request.Request(
+                f"https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/subdomain",
+                headers=cf_headers,
+            )
+            subdomain = ""
+            try:
+                with urllib.request.urlopen(sub_req, timeout=10) as s_resp:
+                    subdomain = (json.loads(s_resp.read().decode("utf-8")).get("result") or {}).get("subdomain", "")
+            except Exception:
+                pass
+
+            boundary = "----GhidraMCPWorkerBoundary65"
+            metadata_json = json.dumps({
+                "main_module": "worker.js",
+                "compatibility_date": "2026-01-01",
+            })
+            body_parts = (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="metadata"; filename="metadata.json"\r\n'
+                f"Content-Type: application/json\r\n\r\n"
+                f"{metadata_json}\r\n"
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="worker.js"; filename="worker.js"\r\n'
+                f"Content-Type: application/javascript+module\r\n\r\n"
+                f"{worker_js}\r\n"
+                f"--{boundary}--\r\n"
+            ).encode("utf-8")
+
+            put_headers = {
+                "Authorization": f"Bearer {tok}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "GhidraMCP-AutoProvisioner/6.5",
+            }
+            put_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/scripts/{worker_name}"
+            put_req = urllib.request.Request(put_url, data=body_parts, headers=put_headers, method="PUT")
+            with urllib.request.urlopen(put_req, timeout=20) as p_resp:
+                p_resp.read()
+
+            # Enable workers.dev subdomain route for this Worker
+            sub_enable_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/scripts/{worker_name}/subdomain"
+            en_req = urllib.request.Request(
+                sub_enable_url,
+                data=json.dumps({"enabled": True}).encode("utf-8"),
+                headers=cf_headers,
+                method="POST",
+            )
+            try:
+                urllib.request.urlopen(en_req, timeout=10)
+            except Exception:
+                pass
+
+            if subdomain:
+                perm_url = f"https://{worker_name}.{subdomain}.workers.dev/mcp"
+            else:
+                perm_url = f"https://{worker_name}.<your-subdomain>.workers.dev/mcp"
+            copy_to_system_clipboard(perm_url)
+            return {
+                "status": "DEPLOYED_PERMANENT_WORKER",
+                "permanent_mcp_url": perm_url,
+                "method": "Cloudflare REST API",
+            }
+        except Exception as exc:
+            return {"status": "error", "error": f"Cloudflare API deploy error: {exc}"}
+
+    # Route 2: Automated `npx --yes wrangler@latest deploy` (opens 1-click Cloudflare OAuth in browser)
+    if not shutil.which("npx") and platform.system().lower() == "windows" and shutil.which("winget"):
+        print("[+] Installing Node.js LTS via winget so Wrangler can auto-deploy your permanent Cloudflare Worker...")
+        subprocess.run(["winget", "install", "--id", "OpenJS.NodeJS.LTS", "-e", "--silent", "--accept-package-agreements", "--accept-source-agreements"], check=False)
+        os.environ["PATH"] = f"C:\\Program Files\\nodejs{os.pathsep}{os.environ.get('PATH', '')}"
+
+    if shutil.which("npx"):
+        w_dir = work_dir / "cf_forever_worker"
+        w_dir.mkdir(parents=True, exist_ok=True)
+        (w_dir / "worker.js").write_text(worker_js, encoding="utf-8")
+        (w_dir / "wrangler.toml").write_text(
+            f'name = "{worker_name}"\nmain = "worker.js"\ncompatibility_date = "2026-01-01"\nworkers_dev = true\n',
+            encoding="utf-8",
+        )
+        print("[+] Running `npx --yes wrangler@latest deploy` (if a browser tab opens, click 'Allow' once)...")
+        npx_cmd = "npx.cmd" if platform.system().lower() == "windows" and shutil.which("npx.cmd") else "npx"
+        proc = subprocess.Popen(
+            [npx_cmd, "--yes", "wrangler@latest", "deploy"],
+            cwd=str(w_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        deployed_url = ""
+        output_lines: List[str] = []
+        if proc.stdout:
+            for line in proc.stdout:
+                print(line, end="", flush=True)
+                output_lines.append(line)
+                m = re.search(r"(https://[a-zA-Z0-9._-]+\.workers\.dev)", line)
+                if m:
+                    deployed_url = m.group(1).rstrip("/") + "/mcp"
+        proc.wait()
+        if deployed_url:
+            copy_to_system_clipboard(deployed_url)
+            return {
+                "status": "DEPLOYED_PERMANENT_WORKER",
+                "permanent_mcp_url": deployed_url,
+                "method": "Wrangler Auto-Deploy",
+            }
+        return {
+            "status": "WRANGLER_NEEDS_AUTH",
+            "message": "Paste a free Cloudflare API Token (Edit Cloudflare Workers template) in the box or install Node.js (`npx`) for 1-click browser login.",
+            "logs": "".join(output_lines[-15:]),
+        }
+
+    return {
+        "status": "NEEDS_CF_TOKEN_OR_NODE",
+        "message": "To auto-deploy the permanent .workers.dev URL without Node.js, paste a free Cloudflare API Token ('Edit Cloudflare Workers' template) in the Cloudflare Token box!",
+    }
+
+
+def run_autonomous_forever_provisioner(
+    work_dir: Path,
+    gh_token_input: str = "",
+    cf_token_input: str = "",
+    repo_name: str = "ghidra-mcp-omni-cloud",
+    interactive_cli: bool = False,
+) -> Dict[str, Any]:
+    """Single end-to-end automated provisioner:
+    1. Resolves or prompts once for GitHub token and saves it.
+    2. Provisions the 24/7 Perpetual Self-Respawning GitHub Actions Relay repo + workflow.
+    3. Polls until the live GitHub Cloud runner publishes `LIVE_MCP_URL.json`.
+    4. Automatically deploys the Permanent Front-Door Cloudflare Worker (`ghidra-mcp-forever.<sub_id>.workers.dev/mcp`)
+       wired with On-Demand Auto-Wake!
+    5. Copies the single permanent URL straight to the user's clipboard!"""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    gh_token = gh_token_input.strip() or auto_detect_saved_github_token(work_dir)
+
+    if not gh_token and interactive_cli:
+        print("\n" + "=" * 80)
+        print("  STEP 1/2: ONE-TIME GITHUB CLOUD AUTHORIZATION")
+        print("=" * 80)
+        gh_url = "https://github.com/settings/tokens/new?description=GhidraMCP-24x7-Forever&scopes=repo,workflow"
+        print(f"  Opening GitHub Token page in your browser: {gh_url}")
+        try:
+            webbrowser.open(gh_url)
+        except Exception:
+            pass
+        gh_token = input("  -> Paste your GitHub Token (ghp_...) and press Enter: ").strip()
+
+    if not gh_token:
+        return {
+            "status": "NEEDS_GITHUB_TOKEN",
+            "error": "Paste your GitHub token (ghp_...) once so the script can provision your 24/7 GitHub Cloud Relay automatically.",
+        }
+
+    # Save token locally so future runs need zero input
+    cfg_file = work_dir / "forever_credentials.json"
+    cfg_file.write_text(json.dumps({"github_token": gh_token, "cf_token": cf_token_input.strip()}, indent=2), encoding="utf-8")
+
+    print("[+] Step 1/3: Auto-provisioning 24/7 Perpetual Self-Respawning GitHub Cloud Relay...")
+    gh_res = deploy_to_github_cloud_api(gh_token, repo_name=repo_name)
+    if gh_res.get("status") != "DEPLOYED_GITHUB_CLOUD":
+        return gh_res
+
+    username = gh_res["username"]
+    raw_live_url = gh_res["raw_live_url"]
+
+    # Also upload the permanent worker with auto-wake token baked in
+    print("[+] Step 2/3: Deploying Permanent Front-Door Cloudflare Worker Router...")
+    cf_res = deploy_cloudflare_worker_automatically(
+        work_dir=work_dir,
+        github_username=username,
+        repo_name=repo_name,
+        gh_token=gh_token,
+        cf_api_token=cf_token_input,
+    )
+
+    print("[+] Step 3/3: Waiting for your 24/7 GitHub Cloud Relay runner to publish its initial LIVE_MCP_URL.json (~45-75s)...")
+    live_tunnel_mcp = ""
+    max_wait = 75 if interactive_cli else 20
+    for elapsed in range(0, max_wait, 5):
+        try:
+            req = urllib.request.Request(
+                f"{raw_live_url}?t={int(time.time())}",
+                headers={"User-Agent": "GhidraMCP-AutoProvisioner/6.5"},
+            )
+            with urllib.request.urlopen(req, timeout=6) as r:
+                live_data = json.loads(r.read().decode("utf-8"))
+                if live_data.get("mcp_url"):
+                    live_tunnel_mcp = live_data["mcp_url"]
+                    break
+        except Exception:
+            pass
+        if interactive_cli:
+            print(f"    ... GitHub Cloud VM booting Ghidra 12.1.4 ({elapsed}s elapsed)...")
+        time.sleep(5)
+
+    final_permanent_url = cf_res.get("permanent_mcp_url") or live_tunnel_mcp
+    if final_permanent_url:
+        copy_to_system_clipboard(final_permanent_url)
+
+    return {
+        "status": "FOREVER_SETUP_COMPLETE",
+        "github_username": username,
+        "github_repo": gh_res["github_repo"],
+        "github_actions_url": gh_res["github_actions_live_logs"],
+        "raw_live_url": raw_live_url,
+        "active_relay_tunnel_mcp_url": live_tunnel_mcp or "Booting on GitHub Actions (~60s)",
+        "cloudflare_worker_result": cf_res,
+        "final_gemini_mcp_url": final_permanent_url,
+        "instructions": (
+            "DONE! Paste `final_gemini_mcp_url` into Gemini -> Settings -> Connected Apps -> Add a custom app link. "
+            "You can now close PowerShell and turn off your PC forever!"
+        ),
+    }
 
 
 def generate_hf_space_bundle(output_dir: Path) -> None:
@@ -851,7 +1279,9 @@ def deploy_to_github_cloud_api(gh_token: str, repo_name: str = "ghidra-mcp-omni-
 
         launcher_source = Path(__file__).resolve().read_text(encoding="utf-8")
         _put_github_file("ghidra_mcp_cloud_launcher.py", launcher_source, "Upload GhidraMCP v5.0 Workstation Pro")
-        _put_github_file(".github/workflows/ghidra_mcp_cloud.yml", GITHUB_WORKFLOW_YML, "Add 100% Free GitHub Actions Cloud Runner")
+        _put_github_file(".github/workflows/ghidra_mcp_cloud.yml", GITHUB_WORKFLOW_YML, "Add 24/7 Perpetual Self-Respawning GitHub Cloud Relay")
+        worker_code = build_permanent_cloudflare_worker_js(username, repo_name)
+        _put_github_file("cloudflare_permanent_router_worker.js", worker_code, "Add Permanent Set-and-Forget Cloudflare Worker Router")
 
         try:
             disp_url = f"https://api.github.com/repos/{username}/{repo_name}/actions/workflows/ghidra_mcp_cloud.yml/dispatches"
@@ -1538,6 +1968,21 @@ __SSR_FORENSICS_JSON__</pre>
 
 <!-- TAB 4: Cloud Deployers & Multi-Cloud Cluster Pool -->
 <div class="tab-pane" id="tab-cloud">
+  <div class="card" style="margin-bottom:18px;border:2px solid var(--success);background:linear-gradient(180deg, rgba(16,185,129,0.10) 0%, var(--panel) 100%);">
+    <h2>
+      <span>⚡ 1-Click Fully Automated "Set-and-Forget Forever" Cloud Provisioner</span>
+      <span class="stage-badge">Run Once on PC &rarr; Turn Off PC Forever</span>
+    </h2>
+    <div style="font-size:0.84rem;color:var(--muted);">
+      Paste your <a href="https://github.com/settings/tokens/new?description=GhidraMCP-24x7-Forever&scopes=repo,workflow" target="_blank" style="color:var(--accent);">GitHub Token (repo + workflow)</a> (and optionally a free <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" style="color:var(--accent);">Cloudflare Workers API Token</a>, or leave Cloudflare blank to use 1-click Wrangler browser login) and click below. This script automatically provisions your <b>24/7 Self-Respawning GitHub Cloud Relay</b> AND deploys your <b>Permanent <code>.workers.dev/mcp</code> Router with Auto-Wake</b> in one shot!
+    </div>
+    <div class="row">
+      <input type="password" id="forever-gh-token" placeholder="1. GitHub Token (ghp_... — leave blank if already saved or in gh CLI)" style="flex:1;">
+      <input type="password" id="forever-cf-token" placeholder="2. Optional Cloudflare API Token (or leave blank for Wrangler browser login)" style="flex:1;">
+      <button class="green" id="btn-run-forever">⚡ Auto-Provision 24/7 Cloud + Permanent URL Now</button>
+    </div>
+    <pre class="code-view" id="forever-output" style="display:none;min-height:140px;"></pre>
+  </div>
   <div class="grid-cards">
     <div class="card">
       <h2>Option 1: 1-Click Kaggle (30 GB RAM) &amp; Colab Notebook (.ipynb)</h2>
@@ -1548,7 +1993,18 @@ __SSR_FORENSICS_JSON__</pre>
     </div>
 
     <div class="card">
-      <h2>Option 2: 1-Click GitHub Cloud Runner Auto-Deployer</h2>
+      <h2>Permanent "Set-and-Forget" Front-Door Router (Never Re-Paste URLs!)</h2>
+      <div style="font-size:0.83rem;color:var(--muted);">
+        Temporary <code>.trycloudflare.com</code> links expire when a session ends. Deploy our 24/7 GitHub Relay (right) + paste this tiny free Worker script into <a href="https://dash.cloudflare.com/" target="_blank" style="color:var(--accent);">Cloudflare Workers Free Tier</a> once. It gives you <b>one permanent <code>.workers.dev/mcp</code> URL</b> that automatically follows your rotating GitHub Cloud tunnels forever!
+      </div>
+      <div class="row">
+        <input type="text" id="cf-gh-user" placeholder="Your GitHub Username (for LIVE_MCP_URL.json)" style="flex:1;">
+        <button class="green" id="btn-dl-worker">Download Permanent Worker (.js)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Option 2: 1-Click 24/7 Perpetual GitHub Cloud Auto-Deployer</h2>
       <div style="font-size:0.84rem;color:var(--muted);">
         Paste a free <a href="https://github.com/settings/tokens/new?description=GhidraMCP-Cloud&scopes=repo,workflow" target="_blank" style="color:var(--accent);">GitHub Token (repo + workflow)</a> to auto-create a repository and boot GhidraMCP on GitHub Actions' free 16 GB RAM Ubuntu runner:
       </div>
@@ -1765,7 +2221,52 @@ function renderFleet(fleet) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: b.getAttribute("data-rm") })
       });
-      refreshStatus();
+      const foreverBtn = document.getElementById("btn-run-forever");
+if (foreverBtn) {
+  foreverBtn.addEventListener("click", async () => {
+    const gh_token = document.getElementById("forever-gh-token").value.trim();
+    const cf_token = document.getElementById("forever-cf-token").value.trim();
+    const outBox = document.getElementById("forever-output");
+    outBox.style.display = "block";
+    outBox.textContent = "Running 100% Automated Set-and-Forget Cloud Provisioner (GitHub 24/7 Relay + Cloudflare Permanent Worker)...";
+    const res = await fetch("/api/auto-provision-forever", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gh_token, cf_token, repo_name: "ghidra-mcp-omni-cloud" })
+    });
+    const data = await res.json();
+    outBox.textContent = JSON.stringify(data, null, 2);
+    if (data.raw_live_url) {
+      let elapsed = 0;
+      const timer = setInterval(async () => {
+        elapsed += 5;
+        try {
+          const r = await fetch(data.raw_live_url + "?t=" + Date.now());
+          if (r.ok) {
+            const live = await r.json();
+            if (live.mcp_url) {
+              clearInterval(timer);
+              const bestUrl = (data.cloudflare_worker_result && data.cloudflare_worker_result.permanent_mcp_url) || live.mcp_url;
+              navigator.clipboard.writeText(bestUrl);
+              outBox.textContent = JSON.stringify({ ...data, active_relay_tunnel_mcp_url: live.mcp_url, COPIED_TO_CLIPBOARD: bestUrl }, null, 2);
+              showToast("Set-and-Forget Cloud URL Ready & Copied: " + bestUrl);
+            }
+          }
+        } catch (e) {}
+      }, 5000);
+    }
+  });
+}
+
+const dlWorkerBtn = document.getElementById("btn-dl-worker");
+if (dlWorkerBtn) {
+  dlWorkerBtn.addEventListener("click", () => {
+    const u = (document.getElementById("cf-gh-user").value || "").trim() || "YOUR_GITHUB_USERNAME";
+    window.location.href = "/api/download-worker?user=" + encodeURIComponent(u);
+  });
+}
+
+refreshStatus();
     });
   });
 }
@@ -1977,6 +2478,17 @@ class OmniCloudHTTPHandler(http.server.BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/download-worker":
+            gh_user = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("user", ["YOUR_GITHUB_USERNAME"])[0]
+            w_bytes = build_permanent_cloudflare_worker_js(gh_user, "ghidra-mcp-omni-cloud").encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="cloudflare_permanent_router_worker.js"')
+            self.send_header("Content-Length", str(len(w_bytes)))
+            self.end_headers()
+            self.wfile.write(w_bytes)
+            return
+
         if path == "/api/download-notebook":
             nb_bytes = build_oneclick_ipynb_bytes()
             self.send_response(200)
@@ -2054,6 +2566,17 @@ class OmniCloudHTTPHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/fleet/ping":
             self._send_json(self.state.check_fleet_health())
+            return
+
+        if path == "/api/auto-provision-forever":
+            res = run_autonomous_forever_provisioner(
+                work_dir=self.state.work_dir,
+                gh_token_input=body.get("gh_token", ""),
+                cf_token_input=body.get("cf_token", ""),
+                repo_name=body.get("repo_name", "ghidra-mcp-omni-cloud"),
+                interactive_cli=False,
+            )
+            self._send_json(res)
             return
 
         if path == "/api/deploy-github":
@@ -2222,6 +2745,15 @@ def ensure_ghidra_and_extension(work_dir: Path) -> Path:
         with zipfile.ZipFile(inner_zips[0], "r") as izf:
             izf.extractall(ext_root)
         shutil.rmtree(tmp_ext, ignore_errors=True)
+    for native_sub in ["Ghidra/Features/Decompiler/os", "Ghidra/Processors", "support", "GPL"]:
+        sub_path = ghidra_dir / native_sub
+        if sub_path.exists():
+            for bin_file in sub_path.rglob("*"):
+                if bin_file.is_file():
+                    try:
+                        bin_file.chmod(0o755)
+                    except Exception:
+                        pass
     return ghidra_dir
 
 
@@ -2526,6 +3058,21 @@ def main() -> None:
         help="Skip starting cloudflared",
     )
     parser.add_argument(
+        "--forever",
+        action="store_true",
+        help="Run the 1-shot Automated Set-and-Forget Cloud Provisioner (sets up 24/7 GitHub Relay + Permanent Cloudflare Worker URL, then exits so you can turn off your PC forever!)",
+    )
+    parser.add_argument(
+        "--gh-token",
+        default="",
+        help="GitHub Personal Access Token for --forever mode (auto-detected from gh CLI / git credentials if omitted)",
+    )
+    parser.add_argument(
+        "--cf-token",
+        default="",
+        help="Optional Cloudflare API Token for --forever mode (uses `npx wrangler deploy` browser login if omitted)",
+    )
+    parser.add_argument(
         "--self-test",
         action="store_true",
         help="Run automated self-test of SSR HTML, JS syntax, static forensics, and MCP multiplexer",
@@ -2534,6 +3081,20 @@ def main() -> None:
 
     if args.self_test:
         run_self_test()
+    elif args.forever:
+        env_info = detect_cloud_environment()
+        w_dir = Path(args.work_dir) if args.work_dir else Path(env_info["default_work_dir"])
+        res = run_autonomous_forever_provisioner(
+            work_dir=w_dir,
+            gh_token_input=args.gh_token,
+            cf_token_input=args.cf_token,
+            interactive_cli=True,
+        )
+        print("\n" + "=" * 82)
+        print("  SET-AND-FORGET 24/7 CLOUD PROVISIONER RESULT")
+        print("=" * 82)
+        print(json.dumps(res, indent=2))
+        print("=" * 82 + "\n")
     elif args.generate_hf_space:
         generate_hf_space_bundle(Path(args.generate_hf_space))
     elif args.deploy_hf_token:
