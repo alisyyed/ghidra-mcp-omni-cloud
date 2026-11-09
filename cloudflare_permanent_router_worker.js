@@ -72,7 +72,7 @@ export default {
         body: request.method !== "GET" && request.method !== "HEAD" ? await request.arrayBuffer() : undefined,
       });
       const resp = await fetch(proxyReq);
-      if (resp.status >= 502) {
+      if (resp.status === 530) {
         await triggerGithubAutoWake();
         throw new Error("Upstream tunnel rotated or sleeping (HTTP " + resp.status + ") — triggered Auto-Wake!");
       }
@@ -80,7 +80,9 @@ export default {
       newHeaders.set("Access-Control-Allow-Origin", "*");
       return new Response(resp.body, { status: resp.status, headers: newHeaders });
     } catch (err) {
-      await triggerGithubAutoWake();
+      if (String(err).includes("530")) {
+        await triggerGithubAutoWake();
+      }
       if (request.method === "POST") {
         try {
           const body = await request.clone().json();
