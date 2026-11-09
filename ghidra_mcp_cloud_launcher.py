@@ -284,6 +284,7 @@ class BackendMCPSession:
         self.backend_port = backend_port
         self.session_id: Optional[str] = None
         self.lock = threading.Lock()
+        self.call_lock = threading.Lock()
 
     @property
     def url(self) -> str:
@@ -357,21 +358,22 @@ class BackendMCPSession:
     def request(self, rpc_body: Dict[str, Any], timeout: int = 25) -> Optional[Dict[str, Any]]:
         if not self.ensure_initialized():
             return None
-        try:
-            parsed, _ = self._raw_post(rpc_body, timeout=timeout)
-            return parsed
-        except urllib.error.HTTPError as he:
-            if he.code in (400, 404):
-                self.reset()
-                if self.ensure_initialized():
-                    try:
-                        parsed, _ = self._raw_post(rpc_body, timeout=timeout)
-                        return parsed
-                    except Exception:
-                        return None
-            return None
-        except Exception:
-            return None
+        with self.call_lock:
+            try:
+                parsed, _ = self._raw_post(rpc_body, timeout=timeout)
+                return parsed
+            except urllib.error.HTTPError as he:
+                if he.code in (400, 404):
+                    self.reset()
+                    if self.ensure_initialized():
+                        try:
+                            parsed, _ = self._raw_post(rpc_body, timeout=timeout)
+                            return parsed
+                        except Exception:
+                            return None
+                return None
+            except Exception:
+                return None
 
 
 class OmniCloudState:
@@ -689,7 +691,7 @@ permissions:
 
 concurrency:
   group: ghidra-mcp-perpetual-relay
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   ghidra-mcp-cloud:
@@ -834,7 +836,7 @@ export default {{
         body: request.method !== "GET" && request.method !== "HEAD" ? await request.arrayBuffer() : undefined,
       }});
       const resp = await fetch(proxyReq);
-      if (resp.status >= 502) {{
+      if (resp.status === 530) {{
         await triggerGithubAutoWake();
         throw new Error("Upstream tunnel rotated or sleeping (HTTP " + resp.status + ") — triggered Auto-Wake!");
       }}
@@ -842,7 +844,9 @@ export default {{
       newHeaders.set("Access-Control-Allow-Origin", "*");
       return new Response(resp.body, {{ status: resp.status, headers: newHeaders }});
     }} catch (err) {{
-      await triggerGithubAutoWake();
+      if (String(err).includes("530")) {{
+        await triggerGithubAutoWake();
+      }}
       if (request.method === "POST") {{
         try {{
           const body = await request.clone().json();
