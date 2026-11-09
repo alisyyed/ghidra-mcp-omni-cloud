@@ -1040,8 +1040,51 @@ def deploy_cloudflare_worker_automatically(
                     deployed_url = m.group(1).rstrip("/") + "/mcp"
         proc.wait()
 
-        # If user skipped Cloudflare login, automatically fall back to Wrangler 4.x's zero-login `--temporary` worker!
-        if not deployed_url:
+        full_out = "".join(output_lines)
+
+        # Auto-resolve Wrangler multi-account error (e.g. after claiming a temporary account into an existing login)
+        if not deployed_url and ("more than one account available" in full_out.lower() or "cloudflare_account_id" in full_out.lower()):
+            acct_matches = re.findall(r"`([^`]+)`:\s*`([0-9a-fA-F]{32})`", full_out)
+            chosen_name, chosen_id = "", ""
+            for a_name, a_id in acct_matches:
+                if "forested lung" in a_name.lower():
+                    chosen_name, chosen_id = a_name, a_id
+                    break
+            if not chosen_id and acct_matches:
+                chosen_name, chosen_id = acct_matches[0]
+            if chosen_id:
+                print(f"[+] Multiple Cloudflare accounts detected — auto-selecting `{chosen_name}` ({chosen_id}) and re-deploying...")
+                (w_dir / "wrangler.toml").write_text(
+                    f'name = "{worker_name}"\naccount_id = "{chosen_id}"\nmain = "worker.js"\ncompatibility_date = "2026-01-01"\nworkers_dev = true\n',
+                    encoding="utf-8",
+                )
+                env_with_acct = dict(os.environ)
+                env_with_acct["CLOUDFLARE_ACCOUNT_ID"] = chosen_id
+                proc_retry = subprocess.Popen(
+                    [npx_cmd, "--yes", "wrangler@latest", "deploy"],
+                    cwd=str(w_dir),
+                    env=env_with_acct,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                if proc_retry.stdout:
+                    for line in proc_retry.stdout:
+                        print(line, end="", flush=True)
+                        output_lines.append(line)
+                        m = re.search(r"(https://[a-zA-Z0-9._-]+\.workers\.dev)", line)
+                        if m:
+                            deployed_url = m.group(1).rstrip("/") + "/mcp"
+                proc_retry.wait()
+                full_out = "".join(output_lines)
+
+        # Only fall back to `--temporary` when genuinely unauthenticated (never when already logged in)
+        already_authed = (
+            "more than one account available" in full_out.lower()
+            or "already authenticated" in full_out.lower()
+            or (whoami.returncode == 0 and "not authenticated" not in (whoami.stdout + whoami.stderr).lower())
+        )
+        if not deployed_url and not already_authed:
             print("[+] No Cloudflare login detected — automatically deploying zero-login `--temporary` Worker...")
             proc_tmp = subprocess.Popen(
                 [npx_cmd, "--yes", "wrangler@latest", "deploy", "--temporary"],
@@ -1582,7 +1625,7 @@ def handle_mcp_jsonrpc(state: OmniCloudState, body: Dict[str, Any]) -> Dict[str,
                 "primary_cloud_host": state.env_info,
                 "engine_stage": state.engine_stage,
                 "active_binary": str(state.active_binary) if state.active_binary else None,
-                "ghidra_backend_running": bool(state.ghidra_proc and self.ghidra_proc.poll() is None),
+                "ghidra_backend_running": bool(state.ghidra_proc and state.ghidra_proc.poll() is None),
                 "public_mcp_endpoint": f"{state.public_base_url.rstrip('/')}/mcp",
                 "federated_cloud_nodes": fleet,
             }
