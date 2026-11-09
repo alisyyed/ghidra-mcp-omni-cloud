@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: ghidra-mcp-perpetual-relay
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   ghidra-mcp-cloud:
